@@ -1,12 +1,34 @@
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const User = require("../models/userModel");
-const sgMail = require("@sendgrid/mail");
+import dotenv from "dotenv";
+dotenv.config();
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+import bcrypt from "bcryptjs";
+const { hash, compare } = bcrypt;
 
+import pkg from "jsonwebtoken";
+const { sign } = pkg;
+
+import sendgrid from "@sendgrid/mail";
+
+import User from "../models/userModel.js";
+import createResponse from "../utils/responseHelper.js";
+import {
+  registerSchema,
+  loginSchema,
+} from "../validationSchemas/userSchema.js";
+import handleValidationError from "../utils/validationErrorHelper.js";
+
+// Set SendGrid API Key
+console.log("SendGrid API Key:", process.env.SENDGRID_API_KEY); // Ensure it's not undefined
+console.log("Sender Email:", process.env.SENDGRID_SENDER_EMAIL);
+
+sendgrid.setApiKey(process.env.SENDGRID_API_KEY);
+
+// Register user
 const register = async (req, res) => {
   try {
+    // Validate request body using registerSchema
+    await registerSchema.validate(req.body, { abortEarly: false });
+
     const { email, password, role } = req.body;
 
     // Check if user already exists
@@ -14,81 +36,98 @@ const register = async (req, res) => {
     if (existingUser) {
       return res
         .status(400)
-        .json({ message: `User already exists with email ${email}` });
-    }
-
-    // Email validation with regex
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ message: "Invalid email format" });
+        .json(
+          createResponse(0, null, null, [
+            { field: "email", message: "User already exists with this email" },
+          ])
+        );
     }
 
     // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await hash(password, 10);
 
-    // Create new user
+    // Save the new user
     const newUser = new User({ email, password: hashedPassword, role });
     await newUser.save();
 
-    // Send the registration email using SendGrid
+    // Send confirmation email using SendGrid
     const msg = {
-      to: email, // recipient's email
-      from: "iamghayoor7@gmail.com", // verified sender email
-      subject: "Registration successful",
-      text: "Welcome to the app",
-      html: "<strong>Welcome to the app</strong>", // optional
+      to: email, // recipient email
+      from: process.env.SENDGRID_SENDER_EMAIL, // sender email (configured in SendGrid)
+      subject: "Welcome to Our Service!",
+      text: `Hello, ${email}! \n\nThank you for registering with us. You can now log in and access your account. \n\nBest regards, \nDubai`,
+      html: `<p>Hello, ${email}!</p><p>Thank you for registering with us. You can now log in and access your account.</p><p>Best regards, <br />Dubai</p>`,
     };
 
-    try {
-      const emailResponse = await sgMail.send(msg);
-      console.log("SendGrid response:", emailResponse); // Log the full response
-      // Send response after both user creation and email sent
-      res.status(201).json({
-        message: `User registered successfully and email sent to ${email}`,
-        emailStatus: "Email sent successfully!",
-      });
-    } catch (emailError) {
-      console.error("Error sending email:", emailError);
-      if (emailError.response) {
-        console.error("SendGrid error response:", emailError.response.body);
-      }
-      // Send response with email failure info
-      res.status(201).json({
-        message: `User registered successfully, but email failed to send`,
-        emailError: emailError.message,
-      });
-    }
+    await sendgrid.send(msg);
+
+    res
+      .status(201)
+      .json(createResponse(1, "User registered successfully", { email, role }));
   } catch (error) {
-    res.status(500).json({
-      message: "Something went wrong",
-      error: error.message,
-      req: req.body,
-    });
+    if (error.name === "ValidationError") {
+      // Handle validation errors using the helper
+      return res.status(400).json(handleValidationError(error));
+    }
+
+    // Handle other errors
+    res
+      .status(500)
+      .json(
+        createResponse(0, null, null, [
+          { field: "server", message: error.message },
+        ])
+      );
   }
 };
 
+// Login user
 const login = async (req, res) => {
   try {
+    // Validate request body using loginSchema
+    await loginSchema.validate(req.body, { abortEarly: false });
+
     const { email, password } = req.body;
-    const user = await User.findOne({ email });
+
+    // Check if user exists
+    const user = await User.findOne({ email }); // Corrected: use User.findOne
     if (!user) {
       return res
         .status(404)
-        .json({ message: `User not found with email ${email}` });
+        .json(createResponse(0, `User not found with email ${email}`));
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    // Compare passwords
+    const isMatch = await compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ message: "Invalid credentials" });
+      return res.status(400).json(createResponse(0, "Invalid credentials"));
     }
-    const token = jwt.sign(
+
+    // Generate token
+    const token = sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
-    res.status(200).json({ token, user });
+
+    res.status(200).json(
+      createResponse(1, "Login successful", {
+        token,
+        user: { id: user._id, email: user.email, role: user.role },
+      })
+    );
   } catch (error) {
-    res.status(500).json({ message: "Something went wrong" });
+    if (error.name === "ValidationError") {
+      // Handle validation errors using the helper
+      return res.status(400).json(handleValidationError(error));
+    }
+
+    res
+      .status(500)
+      .json(
+        createResponse(0, "An error occurred during login", null, error.message)
+      );
   }
 };
-module.exports = { register, login };
+
+export default { register, login };

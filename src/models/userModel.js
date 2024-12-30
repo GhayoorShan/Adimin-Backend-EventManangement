@@ -1,11 +1,13 @@
-const mongoose = require("mongoose");
+import { Schema, model } from "mongoose";
 
-const userSchema = new mongoose.Schema(
+// User Schema
+const userSchema = new Schema(
   {
     email: {
       type: String,
       required: true,
       unique: true,
+      lowercase: true, // Ensures email is stored in lowercase in the database
     },
     password: {
       type: String,
@@ -18,8 +20,8 @@ const userSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: true,
+    timestamps: true, // Automatically manages createdAt and updatedAt fields
   }
 );
 
-module.exports = mongoose.model("User", userSchema);
+export default model("User", userSchema);
